@@ -4,6 +4,10 @@
 #include "ble_bridge.h"
 #include "data.h"
 #include "buddy.h"
+#include "audio/recorder.h"
+#include "audio/audio_pipeline.h"
+#include "audio/audio_state.h"
+#include "audio/ble_audio_uploader.h"
 
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
 
@@ -45,6 +49,9 @@ bool    menuOpen    = false;
 uint8_t menuSel     = 0;
 uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
 bool    btnALong    = false;
+bool     btnBLong          = false;
+uint32_t btnBPressedAt     = 0;     // millis() when current B press began (0 = not pressed)
+uint32_t awaitingStartedMs = 0;     // millis() when entering kAwaitingTranscript
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
 uint8_t displayMode = DISP_NORMAL;
@@ -983,6 +990,9 @@ void setup() {
   }
 
   Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+
+  audio::recorder_init();
+  audio::pipeline_init();
 }
 
 void loop() {
@@ -990,6 +1000,25 @@ void loop() {
   M5.Beep.update();
   t++;
   uint32_t now = millis();
+
+  // ── Phase 2 audio housekeeping ──
+  if (audio::uploader_in_session()) {
+    audio::uploader_pump(/*max_frames=*/4);
+    if (audio::get_state() == audio::State::kRecording &&
+        !audio::pipeline_is_active()) {
+      // ring_buffer overflowed; pipeline auto-aborted
+      audio::uploader_abort_session("buffer_full");
+      audio::set_state(audio::State::kNormal);
+    }
+  }
+  if (audio::get_state() == audio::State::kAwaitingTranscript &&
+      awaitingStartedMs != 0 &&
+      (now - awaitingStartedMs) > 10000) {
+    Serial.println("[audio] awaiting timeout (10s); → normal");
+    audio::set_state(audio::State::kNormal);
+    awaitingStartedMs = 0;
+  }
+  // ── /audio housekeeping ──
 
   dataPoll(&tama);
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
@@ -1105,37 +1134,72 @@ void loop() {
     swallowBtnA = false;
   }
 
-  // BtnB: pet → heart
+  // BtnB: approval-deny is IMMEDIATE (per §5.3.2 / 铁律 1); all other
+  // actions defer to wasReleased() so a >=500ms hold is reinterpreted as
+  // "long-press B → enter recording" (per §5.3.1).
   if (M5.BtnB.wasPressed()) {
     if (swallowBtnB) { swallowBtnB = false; }
-    else
-    if (inPrompt) {
+    else if (inPrompt) {
       char cmd[96];
       snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
       sendCmd(cmd);
       responseSent = true;
       statsOnDenial();
       beep(600, 60);
-    } else if (resetOpen) {
-      beep(2400, 30);
-      applyReset(resetSel);
-    } else if (settingsOpen) {
-      beep(2400, 30);
-      applySetting(settingsSel);
-    } else if (menuOpen) {
-      beep(2400, 30);
-      menuConfirm();
-    } else if (displayMode == DISP_INFO) {
-      beep(2400, 30);
-      infoPage = (infoPage + 1) % INFO_PAGES;
-    } else if (displayMode == DISP_PET) {
-      beep(2400, 30);
-      petPage = (petPage + 1) % PET_PAGES;
-      applyDisplayMode();
     } else {
-      beep(2400, 30);
-      msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+      btnBPressedAt = now ? now : 1;  // arm long-press timer
     }
+  }
+
+  // Long-press B → recording entry. Only valid in non-approval audio-friendly states.
+  if (M5.BtnB.pressedFor(500) && btnBPressedAt && !btnBLong && !swallowBtnB && !inPrompt) {
+    btnBLong = true;
+    audio::State s = audio::get_state();
+    if (s == audio::State::kNormal || s == audio::State::kDraftIdle) {
+      if (audio::uploader_begin_session()) {
+        audio::pipeline_start_session();
+        audio::set_state(audio::State::kRecording);
+        beep(2400, 30);
+      } else {
+        Serial.println("[audio] begin_session failed (BLE down?); B long-press ignored");
+      }
+    }
+  }
+
+  if (M5.BtnB.wasReleased()) {
+    if (btnBLong) {
+      if (audio::get_state() == audio::State::kRecording) {
+        audio::pipeline_stop_session();
+        audio::uploader_end_session();
+        audio::set_state(audio::State::kAwaitingTranscript);
+        awaitingStartedMs = now;
+        beep(1800, 30);
+      }
+    } else if (btnBPressedAt && !inPrompt) {
+      // Short-press B: deferred non-approval action
+      if (resetOpen) {
+        beep(2400, 30);
+        applyReset(resetSel);
+      } else if (settingsOpen) {
+        beep(2400, 30);
+        applySetting(settingsSel);
+      } else if (menuOpen) {
+        beep(2400, 30);
+        menuConfirm();
+      } else if (displayMode == DISP_INFO) {
+        beep(2400, 30);
+        infoPage = (infoPage + 1) % INFO_PAGES;
+      } else if (displayMode == DISP_PET) {
+        beep(2400, 30);
+        petPage = (petPage + 1) % PET_PAGES;
+        applyDisplayMode();
+      } else {
+        beep(2400, 30);
+        msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+      }
+    }
+    btnBPressedAt = 0;
+    btnBLong      = false;
   }
 
   // blink bookkeeping
