@@ -6,7 +6,7 @@
 
 ---
 
-## 这个 fork 加了什么吸引人的特性
+## 引入了什么新特性
 
 这是 [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy) 的扩展版本。官方 buddy 已经做了"通过 BLE 远程审批 Claude Code 工具调用"（按 A 同意 / B 拒绝），这个 fork 在它的基础上添加四个能力：
 
