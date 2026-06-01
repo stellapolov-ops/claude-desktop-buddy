@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 #include "ble_bridge.h"
 #include "xfer.h"
+#include "audio/audio_state.h"
+#include "audio/preview_render.h"
 
 struct TamaState {
   uint8_t  sessionsTotal;
@@ -70,6 +72,38 @@ inline bool dataRtcValid() { return _rtcValid; }
 static void _applyJson(const char* line, TamaState* out) {
   JsonDocument doc;
   if (deserializeJson(doc, line)) return;
+
+  // ── PC → M5 voice protocol (Phase 2 §6.1.3 / §6.1.4) ──────────────
+  // MUST dispatch before xferCommand() — buddy 文件传输协议会吞掉任何
+  // 它不认识的 cmd 字段，把 voice_preview/voice_error 误分类。
+  const char* cmd = doc["cmd"];
+  if (cmd && strcmp(cmd, "voice_preview") == 0) {
+    const char* sid   = doc["sid"];
+    int   full_chars  = doc["full_chars"] | 0;
+    if (audio::get_state() == audio::State::kAwaitingTranscript) {
+      audio::preview_set(sid, full_chars);
+      audio::set_state(audio::State::kPreview);
+    } else {
+      Serial.printf("[voice_preview] ignored (state=%s)\n",
+                    audio::state_name(audio::get_state()));
+    }
+    _lastLiveMs = millis();
+    return;
+  }
+  if (cmd && strcmp(cmd, "voice_error") == 0) {
+    const char* reason = doc["reason"];
+    if (audio::get_state() == audio::State::kAwaitingTranscript) {
+      audio::preview_set_error(reason ? reason : "?");
+      audio::set_state(audio::State::kPreview);
+    } else {
+      Serial.printf("[voice_error] ignored (state=%s)\n",
+                    audio::state_name(audio::get_state()));
+    }
+    _lastLiveMs = millis();
+    return;
+  }
+  // ──────────────────────────────────────────────────────────────────
+
   if (xferCommand(doc)) { _lastLiveMs = millis(); return; }
 
   // Bridge sends {"time":[epoch_sec, tz_offset_sec]}; gmtime_r on the

@@ -8,6 +8,7 @@
 #include "audio/audio_pipeline.h"
 #include "audio/audio_state.h"
 #include "audio/ble_audio_uploader.h"
+#include "audio/preview_render.h"
 
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
 
@@ -1018,6 +1019,10 @@ void loop() {
     audio::set_state(audio::State::kNormal);
     awaitingStartedMs = 0;
   }
+  // Voice preview/error overlay auto-expire (error mode 3s TTL).
+  if (audio::preview_tick(now) && audio::get_state() == audio::State::kPreview) {
+    audio::set_state(audio::State::kNormal);
+  }
   // ── /audio housekeeping ──
 
   dataPoll(&tama);
@@ -1114,6 +1119,13 @@ void loop() {
         statsOnApproval(tookS);
         beep(2400, 60);
         if (tookS < 5) triggerOneShot(P_HEART, 2000);
+      } else if (audio::get_state() == audio::State::kPreview) {
+        // Short-press A in preview: Day 2 placeholder for "append to draft"
+        // — Step 5 will turn this into voice_segment_append. For now just
+        // dismiss the preview and return to normal.
+        beep(2400, 30);
+        audio::preview_clear();
+        audio::set_state(audio::State::kNormal);
       } else if (resetOpen) {
         beep(1800, 30);
         resetSel = (resetSel + 1) % RESET_N;
@@ -1177,7 +1189,13 @@ void loop() {
       }
     } else if (btnBPressedAt && !inPrompt) {
       // Short-press B: deferred non-approval action
-      if (resetOpen) {
+      if (audio::get_state() == audio::State::kPreview) {
+        // Short-press B in preview: discard segment (Day 2 placeholder;
+        // Step 5 will send voice_segment_discard to PC). Return to normal.
+        beep(1200, 30);
+        audio::preview_clear();
+        audio::set_state(audio::State::kNormal);
+      } else if (resetOpen) {
         beep(2400, 30);
         applyReset(resetSel);
       } else if (settingsOpen) {
@@ -1290,6 +1308,14 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
+    // Voice preview/error overlay (Phase 2 Day 2 §5). Covers buddy /
+    // character / clock; under prompt / modal menus, which are higher
+    // priority. preview_render() does its own fillSprite, so anything
+    // drawn above is intentionally erased when an overlay is active.
+    if (!inPrompt && !menuOpen && !settingsOpen && !resetOpen &&
+        audio::preview_active()) {
+      audio::preview_render(spr);
+    }
     spr.pushSprite(0, 0);
   }
 
