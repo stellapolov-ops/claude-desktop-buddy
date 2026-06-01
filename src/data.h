@@ -4,6 +4,8 @@
 #include "ble_bridge.h"
 #include "xfer.h"
 #include "audio/audio_state.h"
+#include "audio/audio_pipeline.h"
+#include "audio/ble_audio_uploader.h"
 #include "audio/preview_render.h"
 
 struct TamaState {
@@ -162,6 +164,7 @@ static void _applyJson(const char* line, TamaState* out) {
   out->draftChars = doc["draft_chars"] | 0;
 
   JsonObject pr = doc["prompt"];
+  bool hadPrompt = (out->promptId[0] != 0);
   if (!pr.isNull()) {
     const char* pid = pr["id"]; const char* pt = pr["tool"]; const char* ph = pr["hint"];
     strncpy(out->promptId,   pid ? pid : "", sizeof(out->promptId)-1);   out->promptId[sizeof(out->promptId)-1]=0;
@@ -169,6 +172,31 @@ static void _applyJson(const char* line, TamaState* out) {
     strncpy(out->promptHint, ph  ? ph  : "", sizeof(out->promptHint)-1); out->promptHint[sizeof(out->promptHint)-1]=0;
   } else {
     out->promptId[0] = 0; out->promptTool[0] = 0; out->promptHint[0] = 0;
+  }
+
+  // §7.6 Approval preemption — when a prompt arrives during recording /
+  // awaiting / preview / draft_idle, abort the audio path so the user can
+  // focus on the approval. Draft segments survive in PC's DraftBuffer;
+  // returning to kDraftIdle after approval lets the user resume.
+  bool hasPrompt = (out->promptId[0] != 0);
+  audio::State s = audio::get_state();
+  if (hasPrompt && !hadPrompt && s != audio::State::kNormal &&
+      s != audio::State::kApproval) {
+    Serial.printf("[audio] approval preempt (state=%s → approval)\n",
+                  audio::state_name(s));
+    if (s == audio::State::kRecording) {
+      audio::pipeline_stop_session();
+      audio::uploader_abort_session("approval_preempt");
+    }
+    audio::preview_clear();
+    audio::set_state(audio::State::kApproval);
+  }
+  // When prompt clears and we were holding kApproval as the audio side,
+  // fall back to draft_idle if the buffer still has segments, else normal.
+  if (!hasPrompt && hadPrompt && s == audio::State::kApproval) {
+    audio::set_state(out->draftChars > 0
+                     ? audio::State::kDraftIdle
+                     : audio::State::kNormal);
   }
   out->lastUpdated = millis();
   _lastLiveMs = millis();
