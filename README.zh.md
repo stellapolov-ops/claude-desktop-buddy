@@ -75,13 +75,11 @@ A 长按 submit        ─ BLE 通知 →    channel notification → Claude Cod
 
 ---
 
-## 与 anthropics 上游的关系
+## 仓库结构
 
-- **`main` 分支**：跟上游同步（不偏离），方便日后吸收上游升级
-- **`phase2-voice-stt-preview` 分支**：扩展功能在这里（**默认显示**）
+- **`main` 分支**：跟 anthropics 上游同步，便于吸收日后官方更新
+- **`phase2-voice-stt-preview` 分支**：本 fork 的扩展功能在这里（**默认显示**）
 - **License**：跟上游一致（MIT）
-
-这种结构保留了未来「精简后 PR 回 anthropics 官方」的可能性。
 
 ---
 
