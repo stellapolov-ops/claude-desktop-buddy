@@ -1,5 +1,7 @@
 # claude-desktop-buddy
 
+**English | [中文](README.zh.md)**
+
 > **Fork notice** — This is a voice-extended fork of [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy).
 >
 > The `phase2-voice-stt-preview` branch adds (on top of the anthropics reference firmware):
