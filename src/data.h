@@ -21,6 +21,7 @@ struct TamaState {
   char     promptId[40];     // pending permission request ID; empty = no prompt
   char     promptTool[20];
   char     promptHint[44];
+  uint16_t draftChars;       // §6.1.4 mirror; 0 = no draft (LCD top status bar only)
 };
 
 // ---------------------------------------------------------------------------
@@ -78,26 +79,35 @@ static void _applyJson(const char* line, TamaState* out) {
   // 它不认识的 cmd 字段，把 voice_preview/voice_error 误分类。
   const char* cmd = doc["cmd"];
   if (cmd && strcmp(cmd, "voice_preview") == 0) {
-    const char* sid   = doc["sid"];
+    const char* sid   = doc["sid"] | "";
     int   full_chars  = doc["full_chars"] | 0;
-    if (audio::get_state() == audio::State::kAwaitingTranscript) {
+    // §6.1.3.1: must check state == awaiting AND sid == expected; late
+    // outcome (state changed or sid rotated) is silently ignored.
+    const char* expected = audio::get_awaiting_sid();
+    bool state_ok = (audio::get_state() == audio::State::kAwaitingTranscript);
+    bool sid_ok   = (expected[0] != 0 && strcmp(sid, expected) == 0);
+    if (state_ok && sid_ok) {
       audio::preview_set(sid, full_chars);
       audio::set_state(audio::State::kPreview);
     } else {
-      Serial.printf("[voice_preview] ignored (state=%s)\n",
-                    audio::state_name(audio::get_state()));
+      Serial.printf("[voice_preview] ignored (state=%s, sid_match=%d)\n",
+                    audio::state_name(audio::get_state()), sid_ok ? 1 : 0);
     }
     _lastLiveMs = millis();
     return;
   }
   if (cmd && strcmp(cmd, "voice_error") == 0) {
+    const char* sid    = doc["sid"]    | "";
     const char* reason = doc["reason"];
-    if (audio::get_state() == audio::State::kAwaitingTranscript) {
+    const char* expected = audio::get_awaiting_sid();
+    bool state_ok = (audio::get_state() == audio::State::kAwaitingTranscript);
+    bool sid_ok   = (expected[0] != 0 && strcmp(sid, expected) == 0);
+    if (state_ok && sid_ok) {
       audio::preview_set_error(reason ? reason : "?");
       audio::set_state(audio::State::kPreview);
     } else {
-      Serial.printf("[voice_error] ignored (state=%s)\n",
-                    audio::state_name(audio::get_state()));
+      Serial.printf("[voice_error] ignored (state=%s, sid_match=%d)\n",
+                    audio::state_name(audio::get_state()), sid_ok ? 1 : 0);
     }
     _lastLiveMs = millis();
     return;
@@ -147,6 +157,10 @@ static void _applyJson(const char* line, TamaState* out) {
     }
     out->nLines = n;
   }
+  // §6.1.4 mirror — purely for LCD top status bar, doesn't drive state machine.
+  // PC omits the field when == 0 (append-only contract); absence resets here.
+  out->draftChars = doc["draft_chars"] | 0;
+
   JsonObject pr = doc["prompt"];
   if (!pr.isNull()) {
     const char* pid = pr["id"]; const char* pt = pr["tool"]; const char* ph = pr["hint"];

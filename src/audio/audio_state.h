@@ -22,4 +22,10 @@ State        get_state();
 void         set_state(State s);
 const char*  state_name(State s);
 
+// Track the sid we entered kAwaitingTranscript with so PC → M5 voice_preview /
+// voice_error can be validated per §6.1.3.1 (late arrivals → sid_mismatch).
+// Caller (main.cpp button release) sets this on entry; data.h reads it.
+void         set_awaiting_sid(const char* sid);
+const char*  get_awaiting_sid();   // 16-char hex + NUL; empty when not awaiting
+
 }  // namespace audio

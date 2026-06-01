@@ -1101,6 +1101,13 @@ void loop() {
     beep(800, 60);
     if (resetOpen) { resetOpen = false; }
     else if (settingsOpen) { settingsOpen = false; characterInvalidate(); }
+    else if (audio::get_state() == audio::State::kDraftIdle) {
+      // Day 3 §5.2 方案 B: confirm-modal replaces menu path for draft
+      // discard. Long-press A pops the modal; short-A then = yes, short-B
+      // = cancel (handled in BtnA/BtnB short-press branches).
+      audio::preview_set_confirm(tama.draftChars);
+      audio::set_state(audio::State::kPreview);
+    }
     else {
       menuOpen = !menuOpen;
       menuSel = 0;
@@ -1120,11 +1127,36 @@ void loop() {
         beep(2400, 60);
         if (tookS < 5) triggerOneShot(P_HEART, 2000);
       } else if (audio::get_state() == audio::State::kPreview) {
-        // Short-press A in preview: Day 2 placeholder for "append to draft"
-        // — Step 5 will turn this into voice_segment_append. For now just
-        // dismiss the preview and return to normal.
+        audio::PreviewMode m = audio::preview_mode();
+        if (m == audio::PreviewMode::kPreview) {
+          // Day 3: append segment to draft. Send voice_segment_append and
+          // optimistically switch to kDraftIdle. PC ack may carry draft_full
+          // (handled via subsequent voice_error-like overlay on retry).
+          char j[80];
+          snprintf(j, sizeof(j), "{\"cmd\":\"voice_segment_append\",\"sid\":\"%s\"}",
+                   audio::preview_sid());
+          sendCmd(j);
+          beep(2400, 30);
+          audio::preview_clear();
+          audio::set_state(audio::State::kDraftIdle);
+        } else if (m == audio::PreviewMode::kConfirmDiscard) {
+          // Confirm yes → discard whole draft. voice_draft_discard has no sid.
+          sendCmd("{\"cmd\":\"voice_draft_discard\"}");
+          beep(2400, 30);
+          audio::preview_clear();
+          audio::set_state(audio::State::kNormal);
+        } else {  // kError → dismiss
+          beep(2400, 30);
+          audio::preview_clear();
+          audio::set_state(audio::State::kNormal);
+        }
+      } else if (audio::get_state() == audio::State::kDraftIdle) {
+        // Short-A in kDraftIdle = submit. PC handles two-phase commit; if
+        // CLI notification fails, ack carries submit_failed (Day 4 wires
+        // ack handling for error overlay). For Day 3 we optimistically go
+        // back to kNormal — submit_failed path is acked but UI is silent.
+        sendCmd("{\"cmd\":\"voice_draft_submit\"}");
         beep(2400, 30);
-        audio::preview_clear();
         audio::set_state(audio::State::kNormal);
       } else if (resetOpen) {
         beep(1800, 30);
@@ -1183,6 +1215,10 @@ void loop() {
       if (audio::get_state() == audio::State::kRecording) {
         audio::pipeline_stop_session();
         audio::uploader_end_session();
+        // §6.1.3.1: remember the sid we just sent voice_end with so any
+        // late voice_preview / voice_error can be sid-matched. uploader
+        // keeps sid_hex_ live until next begin_session, so this is safe.
+        audio::set_awaiting_sid(audio::uploader_current_sid());
         audio::set_state(audio::State::kAwaitingTranscript);
         awaitingStartedMs = now;
         beep(1800, 30);
@@ -1190,11 +1226,29 @@ void loop() {
     } else if (btnBPressedAt && !inPrompt) {
       // Short-press B: deferred non-approval action
       if (audio::get_state() == audio::State::kPreview) {
-        // Short-press B in preview: discard segment (Day 2 placeholder;
-        // Step 5 will send voice_segment_discard to PC). Return to normal.
-        beep(1200, 30);
-        audio::preview_clear();
-        audio::set_state(audio::State::kNormal);
+        audio::PreviewMode m = audio::preview_mode();
+        if (m == audio::PreviewMode::kPreview) {
+          // Day 3: discard this segment. Keep any earlier accumulated
+          // segments; if draftChars > 0 (mirror), fall back to kDraftIdle.
+          char j[80];
+          snprintf(j, sizeof(j), "{\"cmd\":\"voice_segment_discard\",\"sid\":\"%s\"}",
+                   audio::preview_sid());
+          sendCmd(j);
+          beep(1200, 30);
+          audio::preview_clear();
+          audio::set_state(tama.draftChars > 0
+                           ? audio::State::kDraftIdle
+                           : audio::State::kNormal);
+        } else if (m == audio::PreviewMode::kConfirmDiscard) {
+          // Confirm no → cancel discard, back to kDraftIdle.
+          beep(1200, 30);
+          audio::preview_clear();
+          audio::set_state(audio::State::kDraftIdle);
+        } else {  // kError → dismiss
+          beep(1200, 30);
+          audio::preview_clear();
+          audio::set_state(audio::State::kNormal);
+        }
       } else if (resetOpen) {
         beep(2400, 30);
         applyReset(resetSel);
@@ -1308,13 +1362,25 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
-    // Voice preview/error overlay (Phase 2 Day 2 §5). Covers buddy /
-    // character / clock; under prompt / modal menus, which are higher
+    // Voice preview/error/confirm overlay (Phase 2 §5). Covers buddy /
+    // character / clock; under prompt / modal menus which are higher
     // priority. preview_render() does its own fillSprite, so anything
     // drawn above is intentionally erased when an overlay is active.
     if (!inPrompt && !menuOpen && !settingsOpen && !resetOpen &&
         audio::preview_active()) {
       audio::preview_render(spr);
+    } else if (!inPrompt && !menuOpen && !settingsOpen && !resetOpen &&
+               tama.draftChars > 0) {
+      // Day 3 §6.1.4 draft top status bar (overlays whatever buddy drew at
+      // the very top). Drawn only when no full-screen modal is active.
+      spr.fillRect(0, 0, W, 14, TFT_BLACK);
+      spr.setTextSize(1);
+      spr.setTextColor(TFT_ORANGE, TFT_BLACK);
+      spr.setTextDatum(TL_DATUM);
+      char bar[24];
+      snprintf(bar, sizeof(bar), "draft: %u chars", tama.draftChars);
+      spr.setCursor(4, 3);
+      spr.print(bar);
     }
     spr.pushSprite(0, 0);
   }

@@ -13,9 +13,7 @@
 namespace audio {
 namespace {
 
-enum class Mode : uint8_t { kInactive = 0, kPreview, kError };
-
-volatile Mode mode = Mode::kInactive;
+volatile PreviewMode mode = PreviewMode::kInactive;
 char          sid_buf[17] = "";       // 16 hex chars + NUL
 int           full_chars  = 0;
 char          reason_buf[24] = "";    // short error code, e.g. "model_missing"
@@ -26,7 +24,9 @@ const int      W = 135;               // matches spr.createSprite(W, H) in main.
 
 }  // namespace
 
-bool preview_active() { return mode != Mode::kInactive; }
+bool preview_active() { return mode != PreviewMode::kInactive; }
+
+PreviewMode preview_mode() { return mode; }
 
 void preview_set(const char* sid, int n) {
   if (sid) {
@@ -38,7 +38,7 @@ void preview_set(const char* sid, int n) {
   full_chars = n;
   reason_buf[0] = 0;
   error_expire_at = 0;
-  mode = Mode::kPreview;
+  mode = PreviewMode::kPreview;
   Serial.printf("[preview] preview sid=%s chars=%d\n", sid_buf, n);
 }
 
@@ -48,16 +48,25 @@ void preview_set_error(const char* reason) {
   sid_buf[0] = 0;
   full_chars = 0;
   error_expire_at = millis() + ERROR_TTL_MS;
-  mode = Mode::kError;
+  mode = PreviewMode::kError;
   Serial.printf("[preview] error %s (TTL %lums)\n",
                 reason_buf, (unsigned long)ERROR_TTL_MS);
 }
 
+void preview_set_confirm(int draft_chars) {
+  sid_buf[0] = 0;
+  full_chars = draft_chars;
+  reason_buf[0] = 0;
+  error_expire_at = 0;   // no auto-expire; user must answer
+  mode = PreviewMode::kConfirmDiscard;
+  Serial.printf("[preview] confirm discard chars=%d\n", draft_chars);
+}
+
 bool preview_tick(uint32_t now_ms) {
-  if (mode != Mode::kError) return false;
+  if (mode != PreviewMode::kError) return false;
   if (error_expire_at && (int32_t)(now_ms - error_expire_at) >= 0) {
     Serial.println("[preview] error TTL expired → inactive");
-    mode = Mode::kInactive;
+    mode = PreviewMode::kInactive;
     error_expire_at = 0;
     return true;
   }
@@ -65,12 +74,13 @@ bool preview_tick(uint32_t now_ms) {
 }
 
 void preview_render(TFT_eSprite& spr) {
-  if (mode == Mode::kInactive) return;
+  if (mode == PreviewMode::kInactive) return;
 
   spr.fillSprite(TFT_BLACK);
   spr.setTextDatum(MC_DATUM);
 
-  if (mode == Mode::kPreview) {
+  const char* footer = "A:append  B:discard";
+  if (mode == PreviewMode::kPreview) {
     spr.setTextSize(2);
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
     spr.drawString("Preview", W / 2, 40);
@@ -84,7 +94,7 @@ void preview_render(TFT_eSprite& spr) {
     spr.setTextSize(2);
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
     spr.drawString("chars", W / 2, 150);
-  } else {
+  } else if (mode == PreviewMode::kError) {
     spr.setTextSize(2);
     spr.setTextColor(TFT_RED, TFT_BLACK);
     spr.drawString("STT failed", W / 2, 70);
@@ -92,18 +102,36 @@ void preview_render(TFT_eSprite& spr) {
     spr.setTextSize(1);
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
     spr.drawString(reason_buf, W / 2, 120);
+    footer = "A:dismiss  B:dismiss";
+  } else {
+    // kConfirmDiscard
+    spr.setTextSize(2);
+    spr.setTextColor(TFT_ORANGE, TFT_BLACK);
+    spr.drawString("Discard", W / 2, 35);
+    spr.drawString("draft?", W / 2, 60);
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d chars", full_chars);
+    spr.setTextSize(2);
+    spr.setTextColor(TFT_WHITE, TFT_BLACK);
+    spr.drawString(buf, W / 2, 115);
+
+    spr.setTextSize(1);
+    spr.setTextColor(0x7BEF, TFT_BLACK);
+    spr.drawString("(will be cleared)", W / 2, 145);
+    footer = "A:yes  B:no";
   }
 
   spr.setTextSize(1);
   spr.setTextColor(0x7BEF, TFT_BLACK);
-  spr.drawString("A:append  B:discard", W / 2, 220);
+  spr.drawString(footer, W / 2, 220);
 
   // Restore default datum so subsequent buddy draws don't inherit MC.
   spr.setTextDatum(TL_DATUM);
 }
 
 void preview_clear() {
-  mode = Mode::kInactive;
+  mode = PreviewMode::kInactive;
   sid_buf[0] = 0;
   full_chars = 0;
   reason_buf[0] = 0;
