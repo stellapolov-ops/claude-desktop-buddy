@@ -1,5 +1,19 @@
 # claude-desktop-buddy
 
+> **Fork notice** — This is a voice-extended fork of [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy).
+>
+> The `phase2-voice-stt-preview` branch adds (on top of the anthropics reference firmware):
+> - **Voice input pipeline**: PDM mic capture → IMA ADPCM encoding → BLE audio upload
+> - **Preview overlay** on the M5 LCD showing whisper transcription before submit
+> - **Draft buffer state machine**: append / discard / submit multiple recording segments
+> - **Audio-state approval preempt**: pause recording when a permission prompt arrives
+>
+> Pair with the [m5buddy PC server](https://github.com/stellapolov-ops/claude-code-m5buddy) (TypeScript + BLE central + whisper) for the complete experience.
+>
+> Original anthropics README continues below.
+
+---
+
 Claude for macOS and Windows can connect Claude Cowork and Claude Code to
 maker devices over BLE, so developers and makers can build hardware that
 displays permission prompts, recent messages, and other interactions. We've
