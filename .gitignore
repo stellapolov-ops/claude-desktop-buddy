@@ -2,3 +2,8 @@
 .vscode/
 .DS_Store
 data/
+
+# Secrets - never commit
+.env
+.env.*
+!.env.example
